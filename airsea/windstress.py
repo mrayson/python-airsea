@@ -12,7 +12,9 @@
 # obs:
 #
 
+import pdb
 import numpy as np
+import operator as op
 
 from .constants import kappa, Charnock_alpha, g, R_roughness
 from .atmosphere import visc_air
@@ -33,6 +35,7 @@ def cdn(sp, z, drag='largepond', Ta=10):
            'largepond' <-- default
            'smith'
            'vera'
+           'coare3'
     Ta : array_like, optional for drag='smith'
          air temperature [:math:`^\\circ` C]
 
@@ -74,12 +77,14 @@ def cdn(sp, z, drag='largepond', Ta=10):
     .. [2] Smith (1988), J. Geophys. Res., 93, 311-326.
     .. [3] E. Vera (1983) FIXME eqn. 8 in Large, Morzel, and Crawford (1995),
     J. Phys. Oceanog., 25, 2959-2971.
+    .. [4] Fairall et al. (2003), J. Climate, 16, 571 - 591
 
     Modifications: Original from AIR_SEA TOOLBOX, Version 2.0
     03-08-1997: version 1.0
     08-26-1998: version 1.1 (vectorized by RP)
     08-05-1999: version 2.0
     11-26-2010: Filipe Fernandes, Python translation.
+    14-07-2015: Matt Rayson, Added some high wind speed drag formulations
     """
     # convert input to numpy array
     sp, z, Ta = np.asarray(sp), np.asarray(z), np.asarray(Ta)
@@ -123,6 +128,40 @@ def cdn(sp, z, drag='largepond', Ta=10):
         sqrcd = kappa / np.log(10. / z0)
         cd = sqrcd ** 2
         u10 = ustarn / sqrcd
+
+    elif drag == 'coare3':
+
+        def coare_charnock(U):
+            """
+            Modifies the charnock parameter under high wind speeds
+            """
+            ch = np.zeros_like(U)
+            ch[U<10.0] = 0.011
+            ch[U>18.0] = 0.018
+
+            idx = op.and_(U>=10., U<=18.0)
+            m = (0.018-0.011)/(18.0-10.)
+            ch[idx] = 0.011 + m*(U[idx] - 10.)
+            return ch
+
+        visc = visc_air(Ta)
+
+        # initial guess
+        ustaro = np.zeros(sp.shape)
+        ustarn = 0.036 * sp
+
+        # iterate to find z0 and ustar
+        ii = np.abs(ustarn - ustaro) > tol
+        while np.any(ii):
+            ustaro = ustarn
+            z0 = coare_charnock(sp) * ustaro ** 2 / g + R_roughness * visc / ustaro
+            ustarn = sp * (kappa / np.log(z / z0))
+            ii = np.abs(ustarn - ustaro) > tol
+
+        sqrcd = kappa / np.log(10. / z0)
+        cd = sqrcd ** 2
+        u10 = ustarn / sqrcd
+
     elif drag == 'vera':
         # constants in fit for drag coefficient
         A = 2.717e-3
@@ -142,6 +181,22 @@ def cdn(sp, z, drag='largepond', Ta=10):
             u10 = sp / (1 + a * np.sqrt(cd))  # Next iteration.
             # Keep going until iteration converges.
             ii = np.abs(u10 - u10o) > tol
+
+    elif drag == 'jaimes2015': 
+        cd = np.zeros_like(sp)
+        u10= sp*1.0
+
+        idx= u10<=5.0
+        cd[idx] = (4.0 - 0.6*u10[idx])*1e-3
+
+        idx= op.and_(u10>=5., u10<=25.0)
+        cd[idx] = (0.7375+0.0525*u10[idx])*1e-3 
+
+        idx= u10>=25.
+        cd[idx] = 2.05e-3
+
+
+
     else:
         print('Unknown method')  # FIXME: raise a proper python error.
 
